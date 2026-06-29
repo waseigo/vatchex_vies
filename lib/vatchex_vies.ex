@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2024 Isaak Tsalicoglou <isaak@waseigo.com>
+# SPDX-FileCopyrightText: 2026 Isaak Tsalicoglou <isaak@waseigo.com>
 # SPDX-License-Identifier: Apache-2.0
 
 defmodule VatchexVies do
@@ -12,7 +12,7 @@ defmodule VatchexVies do
   VatchexVies.lookup("EL", "998144460", cache: VatchexVies.CachexCache)
   ```
 
-  Returns `{:ok, map}` with company data or `{:error, reason}`.
+  Returns `{:ok, map}` with company data or `{:error, %{code: atom, descr: string}}`.
 
   ## Response map (on success)
 
@@ -22,11 +22,22 @@ defmodule VatchexVies do
     afm: "998144460",
     onomasia: "Company Name",
     commer_title: "Trading Name",
-    address: "Street Address",
+    address: "Street Address\nPostCode City",
+    address_collapsed: "Street Address PostCode City",
     source: :vies
   }
   ```
 
+  ## Error codes
+
+  | code | descr | meaning |
+  |------|-------|---------|
+  | `:invalid_vat` | `"Invalid VAT number"` | VAT number invalid per VIES |
+  | `:invalid_vat` | `"VAT number is blank"` | Empty or whitespace-only input (no API call) |
+  | `:vies_http_error` | `"HTTP 500"` | Non-2xx from VIES |
+  | `:vies_too_many_requests` | `"Rate limited by VIES"` | HTTP 429 — caller should back off |
+  | `:vies_request_failed` | `"connection refused"` | Transport failure |
+  | `:vies_status_unavailable` | `"VIES status endpoint unavailable"` | Cannot reach VIES status endpoint |
   """
 
   @vies_check_url "https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number"
@@ -38,33 +49,37 @@ defmodule VatchexVies do
   ## Options
 
   - `:cache` — a module implementing `VatchexVies.Cache` protocol (e.g. `VatchexVies.CachexCache`)
-  - `:plug` — a custom Req plug for testing
+  - `:test_adapter` — a `{Req.Test, module}` tuple for test stubbing
   """
-  @spec lookup(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def lookup(country_code, tin, opts \\ []) do
-    cache = Keyword.get(opts, :cache, nil)
-    cache_key = "vies:#{country_code}:#{tin}"
+    tin = String.trim(tin)
 
-    case cache_get(cache, cache_key) do
-      {:ok, data} ->
-        {:ok, data}
+    if tin == "" do
+      {:error, %{code: :invalid_vat, descr: "VAT number is blank"}}
+    else
+      cache = Keyword.get(opts, :cache, nil)
+      cache_key = "vies:#{country_code}:#{tin}"
 
-      :miss ->
-        result = do_lookup(country_code, tin, opts)
-        cache_store(cache, cache_key, result)
-        result
+      case cache_get(cache, cache_key) do
+        {:ok, data} ->
+          {:ok, data}
+
+        :miss ->
+          result = do_lookup(country_code, tin, opts)
+          cache_store(cache, cache_key, result)
+          result
+      end
     end
   end
 
   @doc """
   Checks if VIES is available for the given country code.
-  Returns `{:ok, boolean()}` or `{:error, reason}`.
+  Returns `{:ok, boolean()}` or `{:error, %{code: atom, descr: string}}`.
 
   ## Options
 
-  - `:plug` — a custom Req plug for testing
+  - `:test_adapter` — a `{Req.Test, module}` tuple for test stubbing
   """
-  @spec available?(String.t(), keyword()) :: {:ok, boolean()} | {:error, term()}
   def available?(country_code, opts \\ []) do
     case available_countries(opts) do
       {:ok, countries} -> {:ok, Map.get(countries, country_code, false)}
@@ -77,14 +92,11 @@ defmodule VatchexVies do
 
   ## Options
 
-  - `:plug` — a custom Req plug for testing
+  - `:test_adapter` — a `{Req.Test, module}` tuple for test stubbing
   """
-  @spec available_countries(keyword()) :: {:ok, map()} | {:error, term()}
   def available_countries(opts \\ []) do
-    plug = Keyword.get(opts, :plug, nil)
-
     req_opts = [decode_json: [keys: :atoms], receive_timeout: 10_000]
-    req_opts = if plug, do: Keyword.put(req_opts, :plug, plug), else: req_opts
+    req_opts = maybe_attach_adapter(req_opts, Keyword.get(opts, :test_adapter))
 
     case Req.get(@vies_status_url, req_opts) do
       {:ok, %Req.Response{status: 200, body: %{countries: countries}}} when is_list(countries) ->
@@ -92,49 +104,55 @@ defmodule VatchexVies do
         {:ok, map}
 
       _ ->
-        {:error, :vies_status_unavailable}
+        {:error, %{code: :vies_status_unavailable, descr: "VIES status endpoint unavailable"}}
     end
   end
 
   # --- Private ---
 
   defp do_lookup(country_code, tin, opts) do
-    plug = Keyword.get(opts, :plug, nil)
-
     json = %{countryCode: country_code, vatNumber: tin}
 
     req_opts = [json: json, decode_json: [keys: :atoms], receive_timeout: 15_000]
-    req_opts = if plug, do: Keyword.put(req_opts, :plug, plug), else: req_opts
+    req_opts = maybe_attach_adapter(req_opts, Keyword.get(opts, :test_adapter))
 
     case Req.post(@vies_check_url, req_opts) do
       {:ok, %Req.Response{body: %{valid: true} = body}} ->
         result = %{
           country_code: Map.get(body, :countryCode, country_code),
           afm: Map.get(body, :vatNumber, tin),
-          onomasia: Map.get(body, :name, "") |> process_name(),
-          commer_title: nil,
-          address: Map.get(body, :address, "") |> process_address(),
+          onomasia: (Map.get(body, :name) || "") |> process_name(),
+          commer_title: Map.get(body, :tradingName),
+          address: Map.get(body, :address) || "",
+          address_collapsed: (Map.get(body, :address) || "") |> process_address(),
           source: :vies
         }
 
         {:ok, result}
 
       {:ok, %Req.Response{body: %{valid: false}}} ->
-        {:error, :invalid_vat}
+        {:error, %{code: :invalid_vat, descr: "Invalid VAT number"}}
+
+      {:ok, %Req.Response{status: 429}} ->
+        {:error, %{code: :vies_too_many_requests, descr: "Rate limited by VIES"}}
 
       {:ok, %Req.Response{status: status}} ->
-        {:error, {:vies_http_error, status}}
+        {:error, %{code: :vies_http_error, descr: "HTTP #{status}"}}
 
       {:error, reason} ->
-        {:error, {:vies_request_failed, reason}}
+        {:error, %{code: :vies_request_failed, descr: Exception.message(reason)}}
     end
   end
+
+  defp process_name(""), do: ""
 
   defp process_name(name) do
     name
     |> String.replace(~r/\s+/, " ")
     |> String.trim()
   end
+
+  defp process_address(""), do: ""
 
   defp process_address(address) do
     address
@@ -143,11 +161,23 @@ defmodule VatchexVies do
     |> String.trim()
   end
 
+  # --- Test adapter ---
+
+  defp maybe_attach_adapter(req_opts, nil), do: req_opts
+
+  defp maybe_attach_adapter(req_opts, {Req.Test, _module} = adapter) do
+    req_opts |> Keyword.put(:plug, adapter) |> Keyword.put(:retry, false)
+  end
+
   # --- Caching ---
 
   defp cache_get(nil, _key), do: :miss
   defp cache_get(cache, key), do: VatchexVies.Cache.get(cache, key)
 
+  defp cache_store(_cache, _key, {:error, _}), do: :ok
   defp cache_store(nil, _key, _result), do: :ok
-  defp cache_store(cache, key, result), do: VatchexVies.Cache.put(cache, key, result)
+
+  defp cache_store(cache, key, {:ok, data}) do
+    VatchexVies.Cache.put(cache, key, data, [])
+  end
 end

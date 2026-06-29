@@ -1,0 +1,126 @@
+# VatchexVies v1.0.0
+
+Client for the EU VIES REST API (VAT number validation and company information lookup).
+
+Not affiliated with the European Commission or the VIES service.
+
+## Installation
+
+Add to mix.exs:
+```elixir
+{:vatchex_vies, "~> 1.0"}
+```
+
+Runtime dependencies: req, jason.
+
+## Public API
+
+### VatchexVies.lookup/3
+
+```elixir
+VatchexVies.lookup(country_code, tin, opts \\ [])
+```
+
+Validates a VAT number against the EU VIES service.
+
+**Parameters:**
+- `country_code` — ISO 3166-1 alpha-2 country code (e.g., "EL", "DE", "FR")
+- `tin` — VAT number / tax identification number
+- `opts` — keyword list:
+  - `:cache` — module implementing `VatchexVies.Cache` protocol (e.g., `VatchexVies.CachexCache`)
+  - `:test_adapter` — `{Req.Test, module}` tuple for test stubbing
+
+**Success return:**
+```elixir
+{:ok,
+ %{
+   country_code: "EL",
+   afm: "998144460",
+   onomasia: "Company Name",
+   commer_title: "Trading Name" | nil,
+   address: "Street Address\nPostCode City",
+   address_collapsed: "Street Address PostCode City",
+   source: :vies
+ }}
+```
+
+- `address` — raw address from VIES (may contain newlines)
+- `address_collapsed` — single-line version with newlines collapsed to spaces
+- `commer_title` — nil if VIES did not return a trading name
+
+**Error return:**
+```elixir
+{:error, %{code: atom, descr: String.t()}}
+```
+
+**Error codes:**
+
+| code | descr | trigger |
+|---|---|---|
+| `:invalid_vat` | "Invalid VAT number" | VIES returned valid: false |
+| `:invalid_vat` | "VAT number is blank" | Empty/whitespace-only input (no API call) |
+| `:vies_http_error` | "HTTP 429" | Non-2xx HTTP status |
+| `:vies_too_many_requests` | "Rate limited by VIES" | HTTP 429 specifically |
+| `:vies_request_failed` | (dynamic) | Transport/network error |
+| `:vies_status_unavailable` | "VIES status endpoint unavailable" | Status check endpoint unreachable |
+
+### VatchexVies.available_countries/1
+
+```elixir
+VatchexVies.available_countries(opts \\ [])
+```
+
+Returns a map of country codes to VIES availability booleans.
+```elixir
+{:ok, %{"EL" => true, "FR" => false, ...}}
+```
+
+### VatchexVies.available?/2
+
+```elixir
+VatchexVies.available?(country_code, opts \\ [])
+```
+
+Returns `{:ok, true}` or `{:ok, false}` for a single country.
+
+### VatchexVies.Cache protocol
+
+Pluggable cache backend. Implement for your cache of choice:
+
+```elixir
+def get(cache, key)     :: {:ok, value} | :miss
+def put(cache, key, value, opts)
+```
+
+Opts may include:
+- `:ttl` — time-to-live in milliseconds
+
+### VatchexVies.CachexCache
+
+Built-in Cachex v4.x adapter. Conditionally compiled — only available when Cachex is in your dependencies.
+
+Configuration:
+```elixir
+config :vatchex_vies, :cache_name, :vatchex_vies   # default
+config :vatchex_vies, :cache_ttl, 86_400_000        # 24 hours
+```
+
+Usage:
+```elixir
+VatchexVies.lookup("EL", "998144460", cache: VatchexVies.CachexCache)
+```
+
+## Caching behavior
+
+- Only successful results (`{:ok, data}`) are cached. Errors never cache.
+- Cache key: `"vies:#{country_code}:#{tin}"`
+- Default TTL: 24 hours (configurable)
+- Zero impact when Cachex is not in your dependency list.
+
+## Testing
+
+```
+mix test
+```
+
+21 unit tests with Req.Test stubs — no live service calls.

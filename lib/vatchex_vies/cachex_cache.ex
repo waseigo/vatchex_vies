@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2024 Isaak Tsalicoglou <isaak@waseigo.com>
+# SPDX-FileCopyrightText: 2026 Isaak Tsalicoglou <isaak@waseigo.com>
 # SPDX-License-Identifier: Apache-2.0
 
 if Code.ensure_loaded?(Cachex) do
@@ -30,20 +30,11 @@ if Code.ensure_loaded?(Cachex) do
       end
     end
 
-    def put(cache \\ @default_cache, key, value, ttl \\ @default_ttl) do
+    def put(cache \\ @default_cache, key, value, opts \\ []) do
+      ttl =
+        Keyword.get(opts, :ttl) || Application.get_env(:vatchex_vies, :cache_ttl, @default_ttl)
+
       Cachex.put(cache, key, value, expiration: ttl)
     end
-  end
-
-  defimpl VatchexVies.Cache, for: Atom do
-    def get(VatchexVies.CachexCache, key),
-      do: VatchexVies.CachexCache.get(key)
-
-    def get(_, _), do: :miss
-
-    def put(VatchexVies.CachexCache, key, value),
-      do: VatchexVies.CachexCache.put(key, value)
-
-    def put(_, _, _), do: :ok
   end
 end
