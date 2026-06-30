@@ -8,20 +8,14 @@ The public API is one function: `lookup/3` (returns `{:ok, map}` / `{:error, %{c
 
 ## Architecture
 
-```
-┌───────────────────────────────┐
-│         Public API            │
-│  lookup/3 → cache? → do_lookup│
-│  available_countries/0        │
-│  available?/1                 │
-└──────────────┬────────────────┘
-               │
-       ┌───────┴───────┐
-       ▼               ▼
-  ┌──────────┐  ┌───────────────┐
-  │do_lookup │  │status endpoint│
-  │ Req.post │  │   Req.get     │
-  └──────────┘  └───────────────┘
+```mermaid
+flowchart TB
+    API["Public API<br/>lookup/3, available_countries/0, available?/1"]
+    DL["do_lookup/3<br/>Req.post → VIES REST"]
+    SE["status endpoint<br/>Req.get → VIES status"]
+
+    API --> DL
+    API --> SE
 ```
 
 ### The `lookup/3` function
@@ -106,25 +100,28 @@ Key properties:
 
 ## Request Flow
 
-```
-Input:  country_code: "EL", tin: "998144460"
+```mermaid
+flowchart LR
+    IN["country_code: EL<br/>tin: 998144460"]
+    V["Step 0: Input validation<br/>trim → reject blank"]
+    C{"Step 1: Cache check"}
+    API["Step 2: POST to VIES<br/>ec.europa.eu/.../check-vat-number"]
+    OK["HTTP 200, valid: true<br/>{:ok, onomasia, commer_title, ...}"]
+    INV["HTTP 200, valid: false<br/>{:error, :invalid_vat}"]
+    RATE["HTTP 429<br/>{:error, :vies_too_many_requests}"]
+    ERR["HTTP non-2xx<br/>{:error, :vies_http_error}"]
+    TF["Transport failure<br/>{:error, :vies_request_failed}"]
+    S["Step 3: Cache store<br/>if {:ok, result}"]
 
-Step 0 — Input validation
-  └─ trim whitespace; reject blank input immediately
-
-Step 1 — Cache check
-  ├─ cache hit? -> return cached result
-  └─ cache miss -> continue
-
-Step 2 — API call
-  ├─ POST to ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number
-  ├─ HTTP 200, valid: true  -> {:ok, %{onomasia, commer_title, address, address_collapsed, afm, country_code, source: :vies}}
-  ├─ HTTP 200, valid: false -> {:error, %{code: :invalid_vat, descr: "Invalid VAT number"}}
-  ├─ HTTP 429               -> {:error, %{code: :vies_too_many_requests, descr: "Rate limited by VIES"}}
-  ├─ HTTP non-2xx           -> {:error, %{code: :vies_http_error, descr: "HTTP #{status}"}}
-  └─ Transport failure      -> {:error, %{code: :vies_request_failed, descr: "..."}}
-
-Step 3 — Cache store (if cache enabled and result is {:ok, ...})
+    IN --> V --> C
+    C -->|hit| DONE["Return cached"]
+    C -->|miss| API
+    API --> OK
+    OK --> S
+    API --> INV
+    API --> RATE
+    API --> ERR
+    API --> TF
 ```
 
 ## Dependencies
