@@ -32,7 +32,7 @@ defmodule VatchexVies.MixProject do
 
   defp package do
     [
-      files: ["lib", "mix.exs", "README*", "LICENSE*", "llms.txt"],
+      files: ["lib", "mix.exs", "README*", "LICENSE*", "TELEMETRY.md", "llms.txt"],
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => "https://github.com/waseigo/vatchex_vies"}
     ]
@@ -52,9 +52,10 @@ defmodule VatchexVies.MixProject do
   defp docs do
     [
       main: "VatchexVies",
-      extras: ["README.md", "CHANGELOG.md"],
+      extras: ["README.md", "TELEMETRY.md", "CHANGELOG.md"],
       groups_for_extras: [
         "README": ~r/README\.md/i,
+        "Telemetry": ~r/TELEMETRY\.md/i,
         "Changelog": ~r/CHANGELOG\.md/i
       ]
     ]
